@@ -1,0 +1,22 @@
+{
+  "name": "silence-js-db-mysql",
+  "version": "0.0.1",
+  "description": "mysql db for silence-js",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "Yuhang GE <abeyuhang@gmail.com>",
+  "license": "ISC",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jing-js/silence-js-db-mysql.git"
+  },
+  "bugs": {
+    "url": "https://github.com/jing-js/silence-js-db-mysql/issues"
+  },
+  "homepage": "https://github.com/jing-js/silence-js-db-mysql#readme",
+  "dependencies": {
+    "silence-js": "~0.0.1"
+  }
+}
