@@ -1,89 +1,106 @@
 'use strict';
 
 const SilenceJS = require('silence-js');
-const BaseDatabaseStore = SilenceJS.BaseDatabaseStore;
+const BaseSQLDatabaseStore = SilenceJS.BaseSQLDatabaseStore;
 const mysql = require('mysql');
 
-class MysqlDatabaseStore extends BaseDatabaseStore {
+class MysqlDatabaseStore extends BaseSQLDatabaseStore {
   constructor(config, logger) {
     super(logger);
-    this.db = mysql.createPool({
-      connectionLimit: config.connectionLimit,
-      host: config.host,
-      user: config.user,
+    this.db = null;
+    this.cfg = {
+      connectionLimit: config.connectionLimit || 20,
+      host: config.host || '127.0.0.1',
+      user: config.user || 'root',
       password: config.password,
       database: config.database || config.schema
-    });
-    this._DEBUG = config.debug || false;
-    this.db.on('error', err => console.error('database error:', err));
-    var me = this;
-    //this.db.on('connection', function() {
-    //  console.log('db');
-    //  me._resolve('ready');
-    //});
-    this._resolve('ready'); //pool没有ready事件
-    process.on('SIGINT', function() {
-      me.db.end();
-    });
+    };
   }
-  createTable(scheme) {
-    let db = this.db;
-    let DEBUG = this._DEBUG;
-    return new Promise(function(resolve, reject) {
-      db.query(`SHOW CREATE TABLE ${scheme.name}`, function(err, result) {
-        if (err) {
-          if (err.code === 'ER_NO_SUCH_TABLE') {
-            createTable(resolve, reject);
-          } else {
-            reject(err);
-          }
-        } else {
-          let ct = result[0] ? result[0]['Create Table'] : '';
-          if (DEBUG && ct && !isSame(ct, scheme.createTableSql)) {
-            db.query(`DROP TABLE \`${scheme.name}\``, function(err) {
-              if (err) {
-                reject(err);
-              } else {
-                createTable(resolve, reject);
-              }
-            });
-          } else {
-            resolve();
-          }
-        }
-      });
+  init() {
+    this.db = mysql.createPool(this.cfg);
+    this.db.on('error', err => {
+      this.logger.error('Mysql Error');
+      this.logger.error(err);
     });
-
-    /**
-     * 对比两个Create Table语句是否一样。
-     * 当前版本不作判断，直接返回true，也就是只有数据库里面有这个表了就不覆盖。
-     * todo 检查两个create table是否一样。
-     * @param c1
-     * @param c2
-     */
-    function isSame(c1, c2) {
-      return true;
-    }
-
-    function createTable(resolve, reject) {
-      db.query(scheme.createTableSql, function(err, result) {
-        if (err) {
-          reject(err);
-        } else {
-          console.log(result);
-          resolve();
-        }
-      });
-    }
+    return Promise.resolve();
   }
   close() {
     this.db.end();
+    return Promise.resolve();
   }
-  *query(queryString, queryParams) {
-    var db = this.db;
+  genCreateTableSQL(Model) {
+    let segments = [];
+    let pk = null;
+    let uniqueFields = [];
+    let indexFields = [];
+    let indices = Model.indices;
+    let fields = Model.fields;
+    
+    if (util.isObject(indices)) {
+      for(let k in indices) {
+        indexFields.push({
+          name: k,
+          value: Array.isArray(indices[k]) ? indices[k].join(',') : indices[k]
+        });
+      }
+    }
+    for(let i = 0; i < fields.length; i++) {
+
+      let sqlSeg = `\`${field.name}\` ${field.type.toUpperCase()}`;
+
+      if (field.require || field.primaryKey) {
+        sqlSeg += ' NOT NULL';
+      }
+
+      if (field.hasOwnProperty('defaultValue')) {
+        sqlSeg += ` DEFAULT '${field.defaultValue}'`;
+      }
+
+      if (field.primaryKey) {
+        pk = field.name;
+      }
+
+      if (field.autoIncrement === true) {
+        sqlSeg += ' AUTO_INCREMENT';
+      }
+
+
+      if (field.unique === true) {
+        uniqueFields.push(field.name);
+      }
+      if (field.index === true) {
+        indexFields.push({
+          name: field.name,
+          value: field.name
+        });
+      }
+
+      if (field.comment) {
+        sqlSeg += ` COMMENT '${field.comment || ''}'`;
+      }
+
+      segments.push(sqlSeg);
+    }
+
+    if (pk) {
+      segments.push(`PRIMARY KEY (\`${pk}\`)`);
+    }
+
+    if (uniqueFields.length > 0) {
+      segments.push(...uniqueFields.map(uniqueColumn => `UNIQUE INDEX \`${uniqueColumn}_UNIQUE\` (\`${uniqueColumn}\` ASC)`))
+    }
+    if (indexFields.length > 0) {
+      segments.push(...indexFields.map(index => `INDEX \`${index.name}_INDEX\` (${index.value})`));
+    }
+    //todo support foreign keys
+
+    return `CREATE TABLE \`${name}\` (\n  ${segments.join(',\n  ')});`;Type === 'sqlite' && indexFields.length > 0) {
+  }
+  query(queryString, queryParams) {
     this.logger.debug(queryString);
-    return new Promise(function(resolve, reject) {
-      db.query(queryString, queryParams, function(err, result) {
+    this.logger.debug(queryParams);
+    return new Promise((resolve, reject) => {
+      this.db.query(queryString, queryParams, function(err, result) {
         if (err) {
           reject(err);
         } else {
