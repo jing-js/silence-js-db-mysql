@@ -1,114 +1,215 @@
 'use strict';
 
-const SilenceJS = require('silence-js');
-const BaseSQLDatabaseStore = SilenceJS.BaseSQLDatabaseStore;
-const mysql = require('mysql');
+const mysql = require('mysql2');
+const path = require('path');
+const util = require('silence-js-util');
+const CWD = process.cwd();
+const fs = require('fs');
 
-class MysqlDatabaseStore extends BaseSQLDatabaseStore {
-  constructor(config, logger) {
-    super(logger);
-    this.db = null;
-    this.cfg = {
-      connectionLimit: config.connectionLimit || 20,
-      host: config.host || '127.0.0.1',
-      user: config.user || 'root',
-      password: config.password,
-      database: config.database || config.schema
-    };
+class SqliteDatabaseStore {
+  constructor(config) {
+    this.logger = config.logger;
+    this._db = null;
+    this._host = config.host || 'localhost';
+    this._user = config.user;
+    this._pass = config.password;
+    this._dbName = config.database;
+    this._cLimit = config.connectionLimit || 10;
   }
+
   init() {
-    this.db = mysql.createPool(this.cfg);
-    this.db.on('error', err => {
-      this.logger.error('Mysql Error');
-      this.logger.error(err);
+    return new Promise((resolve, reject) => {
+      this._db = mysql.createPool({
+        host: this._host,
+        user: this._user,
+        password: this._pass,
+        database: this._dbName,
+        connectionLimit: this._cLimit
+      });
+      // create pool will lazy connect
+      resolve();
     });
-    return Promise.resolve();
   }
   close() {
-    this.db.end();
-    return Promise.resolve();
+    return new Promise((resolve, reject) => {
+      this._db.end(err => {
+        if(err) {
+          reject(err);
+        } else {
+          resolve();
+        }
+      });
+    });
+  }
+  initField(field) {
+    if (!field.rules) {
+      field.rules = {};
+    }
+
+    if (!field.dbType) {
+      field.dbType = field.type;
+    }
+
+    field.dbType = field.dbType.toUpperCase();
+
+    if (field.dbType === 'STRING') {
+      field.dbType === 'VARCHAR(255)';
+    } else if (['DATE', 'TIME', 'DATETIME'].indexOf(field.dbType) >= 0) {
+      field.dbType = 'TIMESTAMP';
+    }
+
+    if (field.dbType === 'BOOLEAN') {
+      field.type = 'boolean';
+    } else if (/CHAR/.test(field.dbType) || /TEXT/.test(field.dbType)) {
+      let m = field.dbType.match(/^\w+\(\s*(\d+)\s*\)/);
+      if (m && !field.rules.maxLength && !field.rules.rangeLength) {
+        field.rules.maxLength = Number(m[1]);
+      }
+      field.type = 'string';
+    } else if (/INT/.test(field.dbType)
+      ||  /DECIMAL|NUMERIC/.test(field.dbType)
+      || ['FLOAT', 'DOUBLE', 'TIMESTAMP'].indexOf(field.dbType) >= 0
+    ) {
+      field.type = 'number';
+    } else {
+      return -1;
+    }
+
+    return 0;
+
   }
   genCreateTableSQL(Model) {
     let segments = [];
-    let pk = null;
-    let uniqueFields = [];
+    let pk = [];
     let indexFields = [];
     let indices = Model.indices;
     let fields = Model.fields;
-    
-    if (util.isObject(indices)) {
+    let name = Model.table;
+
+    let _uniques = [];
+
+    if (typeof indices === 'object' && indices !== null) {
+      /*
+       * {
+       *    someIndex: ['someField', {anotherField: 'DESC'}],
+       *    anotherIndex: [...]
+       * }
+       */
       for(let k in indices) {
-        indexFields.push({
-          name: k,
-          value: Array.isArray(indices[k]) ? indices[k].join(',') : indices[k]
-        });
+        let f = indices[k].map(index => {
+          if (typeof index !== 'object') {
+            return `\`${index}\` ASC`;
+          } else {
+            let fn;
+            let fs;
+            for(fn in index) {
+              fs = index[fn];
+              break;
+            }
+            return `\`${fn}\` ${fs}`;
+          }
+        }).join(', ')
+        indexFields.push(`INDEX \`${k}\` (${f})`);
       }
     }
     for(let i = 0; i < fields.length; i++) {
 
-      let sqlSeg = `\`${field.name}\` ${field.type.toUpperCase()}`;
+      let field = fields[i];
+      let sqlSeg = `\`${field.name}\` ${field.dbType.toUpperCase()}`;
 
       if (field.require || field.primaryKey) {
+        field.require = !field.autoIncrement;
         sqlSeg += ' NOT NULL';
+      } else {
+        field.require = false;
+        sqlSeg += ' NULL';
       }
 
       if (field.hasOwnProperty('defaultValue')) {
-        sqlSeg += ` DEFAULT '${field.defaultValue}'`;
-      }
+        let dv = field.defaultValue;
+        if (/CHAR/.test(field.dbType) || /TEXT/.test(field.dbType)) {
+          sqlSeg += ` DEFAULT '${dv.replace(/\'/g, '\\\'')}'`;
+        } else {
+          sqlSeg += ` DEFAULT ${dv}`;
+        }
 
-      if (field.primaryKey) {
-        pk = field.name;
+        if (field.dbType === 'TIMESTAMP' && /CURRENT_TIMESTAMP/.test(dv)) {
+          field.defaultValue = undefined;
+          field.require = false;
+        }
       }
 
       if (field.autoIncrement === true) {
         sqlSeg += ' AUTO_INCREMENT';
       }
 
-
-      if (field.unique === true) {
-        uniqueFields.push(field.name);
-      }
-      if (field.index === true) {
-        indexFields.push({
-          name: field.name,
-          value: field.name
-        });
+      if (field.primaryKey) {
+        pk.push(field.name);
       }
 
-      if (field.comment) {
-        sqlSeg += ` COMMENT '${field.comment || ''}'`;
+      if (field.unique) {
+        let sort = field.unique === 'DESC' ? 'DESC' : 'ASC';
+        _uniques.push(
+          `UNIQUE INDEX \`${field.name}_UNIQUE\` (\`${field.name}\` ${sort})`
+        );
+      }
+
+      if (field.index) {
+        let sort = field.index === 'DESC' ? 'DESC' : 'ASC';
+        indexFields.push(`INDEX \`${field.name}_INDEX\` (\`${field.name}\` ${sort})`);
       }
 
       segments.push(sqlSeg);
     }
 
-    if (pk) {
-      segments.push(`PRIMARY KEY (\`${pk}\`)`);
+    if (pk.length > 0) {
+      segments.push(`PRIMARY KEY (${pk.map(p => `\`${p}\``).join(', ')})`);
     }
 
-    if (uniqueFields.length > 0) {
-      segments.push(...uniqueFields.map(uniqueColumn => `UNIQUE INDEX \`${uniqueColumn}_UNIQUE\` (\`${uniqueColumn}\` ASC)`))
-    }
     if (indexFields.length > 0) {
-      segments.push(...indexFields.map(index => `INDEX \`${index.name}_INDEX\` (${index.value})`));
+      segments = segments.concat(indexFields);
     }
+
+    if (_uniques.length > 0) {
+      segments = segments.concat(_uniques);
+    }
+
     //todo support foreign keys
 
-    return `CREATE TABLE \`${name}\` (\n  ${segments.join(',\n  ')});`;Type === 'sqlite' && indexFields.length > 0) {
+    let sql = `CREATE TABLE \`${name}\` (\n  ${segments.join(',\n  ')});`;
+
+    return sql;
+
+  }
+  exec(queryString, queryParams) {
+    this.logger.debug(queryString);
+    this.logger.debug(queryParams);
+    return new Promise((resolve, reject) => {
+      this._db.execute(queryString, queryParams, function(err, result) {
+        if (err) {
+          reject(err);
+        } else {
+          resolve({
+            affectedRows: typeof result.changedRows === 'number' ? result.changedRows : result.affectedRows,
+            insertId: result.insertId
+          });
+        }
+      });
+    });
   }
   query(queryString, queryParams) {
     this.logger.debug(queryString);
     this.logger.debug(queryParams);
     return new Promise((resolve, reject) => {
-      this.db.query(queryString, queryParams, function(err, result) {
+      this._db.execute(queryString, queryParams, function(err, rows) {
         if (err) {
           reject(err);
         } else {
-          resolve(result);
+          resolve(rows);
         }
       });
-    })
+    });
   }
 }
 
-module.exports = MysqlDatabaseStore;
+module.exports = SqliteDatabaseStore;
