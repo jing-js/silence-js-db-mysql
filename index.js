@@ -75,6 +75,20 @@ class SqliteDatabaseStore {
       return -1;
     }
 
+    if (field.hasOwnProperty('defaultValue')) {
+      field.require = false;
+    } else if (field.primaryKey && !field.autoIncrement) {
+      field.require = true;
+    }
+
+    if (field.dbType === 'TIMESTAMP'
+      && field.hasOwnProperty('defaultValue')
+      && typeof field.defaultValue === 'string') {
+      
+      field.defaultValue = undefined;
+      field.require = false;
+    }
+
     return 0;
 
   }
