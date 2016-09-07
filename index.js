@@ -85,6 +85,7 @@ class SqliteDatabaseStore {
       && field.hasOwnProperty('defaultValue')
       && typeof field.defaultValue === 'string') {
       
+      field.__dv = field.defaultValue;
       field.defaultValue = undefined;
       field.require = false;
     }
@@ -139,17 +140,12 @@ class SqliteDatabaseStore {
         sqlSeg += ' NULL';
       }
 
-      if (field.hasOwnProperty('defaultValue')) {
-        let dv = field.defaultValue;
+      if (field.hasOwnProperty('defaultValue') || field.hasOwnProperty('__dv')) {
+        let dv = field.defaultValue || field.__dv;
         if (/CHAR/.test(field.dbType) || /TEXT/.test(field.dbType)) {
           sqlSeg += ` DEFAULT '${dv.replace(/\'/g, '\\\'')}'`;
         } else {
           sqlSeg += ` DEFAULT ${dv}`;
-        }
-
-        if (field.dbType === 'TIMESTAMP' && /CURRENT_TIMESTAMP/.test(dv)) {
-          field.defaultValue = undefined;
-          field.require = false;
         }
       }
 
