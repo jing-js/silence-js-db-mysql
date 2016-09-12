@@ -1,6 +1,6 @@
 {
   "name": "silence-js-db-mysql",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "mysql db for silence-js",
   "main": "index.js",
   "scripts": {

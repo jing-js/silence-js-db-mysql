@@ -42,26 +42,16 @@ class SqliteDatabaseStore {
     });
   }
   initField(field) {
-    if (!field.rules) {
-      field.rules = {};
-    }
-
-    if (!field.dbType) {
-      field.dbType = field.type;
-    }
-
-    field.dbType = field.dbType.toUpperCase();
 
     if (field.dbType === 'STRING') {
-      field.dbType === 'VARCHAR(255)';
-    } else if (['DATE', 'TIME', 'DATETIME'].indexOf(field.dbType) >= 0) {
-      field.dbType = 'TIMESTAMP';
+      field.dbType = 'VARCHAR(255)';
     }
 
-    if (field.dbType === 'BOOLEAN') {
-      field.type = 'boolean';
-    } else if (/CHAR/.test(field.dbType) || /TEXT/.test(field.dbType)) {
+    if (/CHAR/.test(field.dbType) || /TEXT/.test(field.dbType)) {
       let m = field.dbType.match(/^\w+\(\s*(\d+)\s*\)/);
+      if (m && !field.rules) {
+        field.rules = {};
+      }
       if (m && !field.rules.maxLength && !field.rules.rangeLength) {
         field.rules.maxLength = Number(m[1]);
       }
@@ -71,23 +61,29 @@ class SqliteDatabaseStore {
       || ['FLOAT', 'DOUBLE', 'TIMESTAMP'].indexOf(field.dbType) >= 0
     ) {
       field.type = 'number';
+    } else if (field.type === 'boolean') {
+      field.dbType = 'TINYINT';
     } else {
       return -1;
     }
 
-    if (field.hasOwnProperty('defaultValue')) {
-      field.require = false;
-    } else if (field.primaryKey && !field.autoIncrement) {
-      field.require = true;
+    if (field.autoUpdate && (field.dbType !== 'TIMESTAMP' || field._defaultValue !== 'now')) {
+      return -3;
     }
-
-    if (field.dbType === 'TIMESTAMP'
-      && field.hasOwnProperty('defaultValue')
-      && typeof field.defaultValue === 'string') {
-      
-      field.__dv = field.defaultValue;
-      field.defaultValue = undefined;
-      field.require = false;
+    
+    if (field._defaultValue !== undefined) {
+      if (field.dbType === 'TIMESTAMP') {
+        if (field._defaultValue !== 'now' && typeof field._defaultValue !== 'number') {
+          return -2;
+        }
+        if (field._defaultValue === 'now') {
+          field._defaultValue = Date.now;
+        }
+      } else if (typeof field._defaultValue !== field.type) {
+        return -2;
+      }
+    } else if (field.isPrimaryKey && !field.autoIncrement) {
+      field.require = true;
     }
 
     return 0;
@@ -130,9 +126,10 @@ class SqliteDatabaseStore {
     for(let i = 0; i < fields.length; i++) {
 
       let field = fields[i];
-      let sqlSeg = `\`${field.name}\` ${field.dbType.toUpperCase()}`;
+      let type = field.dbType.toUpperCase();
+      let sqlSeg = `\`${field.name}\` ${type === 'TIMESTAMP' ? 'BIGINT UNSIGNED' : type}`;
 
-      if (field.require || field.primaryKey) {
+      if (field.require || field.isPrimaryKey) {
         field.require = !field.autoIncrement;
         sqlSeg += ' NOT NULL';
       } else {
@@ -140,9 +137,9 @@ class SqliteDatabaseStore {
         sqlSeg += ' NULL';
       }
 
-      if (field.hasOwnProperty('defaultValue') || field.hasOwnProperty('__dv')) {
-        let dv = field.defaultValue || field.__dv;
-        if (/CHAR/.test(field.dbType) || /TEXT/.test(field.dbType)) {
+      if (field._defaultValue !== undefined && typeof field._defaultValue !== 'function') {
+        let dv = field.defaultValue;
+        if (typeof dv === 'string') {
           sqlSeg += ` DEFAULT '${dv.replace(/\'/g, '\\\'')}'`;
         } else {
           sqlSeg += ` DEFAULT ${dv}`;
@@ -153,7 +150,7 @@ class SqliteDatabaseStore {
         sqlSeg += ' AUTO_INCREMENT';
       }
 
-      if (field.primaryKey) {
+      if (field.isPrimaryKey) {
         pk.push(field.name);
       }
 
